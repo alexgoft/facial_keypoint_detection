@@ -6,7 +6,7 @@ import cv2
 
 from keras import initializers
 from keras.models import Sequential
-from keras.layers import Dense, Conv2D, Flatten, MaxPooling2D, Activation, Dropout
+from keras.layers import Dense, Conv2D, Flatten, MaxPooling2D, Activation, Dropout, UpSampling2D
 from os.path import exists
 from sklearn.model_selection import train_test_split
 from keras.models import model_from_json
@@ -63,21 +63,27 @@ def prepare_data():
             sample_annotation = []
 
             for i in range(0, len(header) - 1, 2):
-                x, y = ((row[header[i]]), row[header[i + 1]])
-                point_annotation = np.zeros(shape=(H, W), dtype=np.float32) \
+                # x, y = ((row[header[i]]), row[header[i + 1]])
+                # point_annotation = np.zeros(shape=(H, W), dtype=np.float32) \
+                #     if np.isnan(x) or np.isnan(y) \
+                #     else np.exp(-1 * (np.sqrt((int(x) - rows_idx[:, None]) ** 2 + (int(y) - cols_idx) ** 2) / SIGMA ** 2))
+                #
+                # sample_annotation.append(point_annotation)
+
+                x, y = (row[header[i]], row[header[i + 1]])
+                point_annotation = np.zeros(shape=(H, W)) \
                     if np.isnan(x) or np.isnan(y) \
                     else np.exp(-1 * (np.sqrt((int(x) - rows_idx[:, None]) ** 2 + (int(y) - cols_idx) ** 2) / SIGMA ** 2))
 
+                point_annotation = np.rot90(point_annotation, k=3)
+
                 sample_annotation.append(point_annotation)
 
-            sample_annotation = np.rot90(np.sum(np.array(sample_annotation), axis=0), k=3).flatten()
-            sample_annotation = np.minimum(sample_annotation, 1)
-
-            X.append(sample)
             Y.append(sample_annotation)
+            X.append(sample / 255)  # Float32
 
-            # cv2.imshow("sample_annotation", sample_annotation)
-            # cv2.imshow("sample", sample)
+            # cv2.imshow("sample_annotation",np.sum(np.array(sample_annotation), axis=0))
+            # cv2.imshow("sample", sample.astype(np.uint8))
             #
             # cv2.waitKey()
 
@@ -91,19 +97,15 @@ def prepare_data():
         np.save(X_TEST_PATH, X_test)
         np.save(Y_TEST_PATH, Y_test)
 
-    print(X_train.shape)
-    print(X_train.shape)
-
-    print(Y_train.shape)
-    print(Y_test.shape)
-
-    # TODO Normalize?
-    # TODO Data type for annotations/images
+    print(X_train.shape)  # (5286, 96, 96, 1)
+    print(Y_train.shape)  # (5286, 15, 96, 96)
+    print(X_test.shape)  # (5286, 96, 96, 1)
+    print(Y_test.shape)  # (1763, 15, 96, 96)
 
     return X_train, X_test, Y_train, Y_test
 
 
-def prepare_model():
+def prepare_model(dropout=False):
     """
         We wont always want dropout, because, for example, too high a dropout rate can slow the convergence rate of the model,
         and often hurt final performance.
@@ -118,26 +120,39 @@ def prepare_model():
 
     model = Sequential()
 
-    # add model layers
-    model.add(Conv2D(16, kernel_size=5, padding='same', kernel_initializer=initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None), input_shape=(H, W, 1)))
+    # ============================= #
+    # Feature Extraction
+    # ============================= #
+    model.add(Conv2D(32, kernel_size=5, padding='same', kernel_initializer=initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None), input_shape=(H, W, 1)))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Activation('relu'))
-    model.add(Dropout(0.1))
-
-    model.add(Conv2D(32, kernel_size=5, padding='same', kernel_initializer=initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None)))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.1))
+    if dropout:
+        model.add(Dropout(0.25))
 
     model.add(Conv2D(64, kernel_size=5, padding='same', kernel_initializer=initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None)))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Activation('relu'))
-    model.add(Dropout(0.1))
+    if dropout:
+        model.add(Dropout(0.25))
 
-    model.add(Flatten())
-    model.add(Dense(9216))
+    model.add(Conv2D(130, kernel_size=5, padding='same', kernel_initializer=initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None)))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Activation('relu'))
+    if dropout:
+        model.add(Dropout(0.25))
 
-    model.compile(optimizer="adam", loss='mean_squared_error', metrics=["accuracy"])  # TODO RMSE
+    # ============================= #
+    # Keypoint Extraction
+    # ============================= #
+    model.add(UpSampling2D(size=(8,8))) # TODO Smarter upsampling
+    model.add(Conv2D(15, kernel_size=5, padding='same', kernel_initializer=initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None)))
+    model.add(Activation('sigmoid'))
+
+
+    # model.add(Flatten())
+    # model.add(Dense(9216))
+
+    # model.compile(optimizer="adam", loss='mean_squared_error', metrics=["accuracy"])  # TODO RMSE
 
     model.summary()
 
@@ -147,8 +162,8 @@ def prepare_model():
 def main():
     # X_train, X_test, Y_train, Y_test = prepare_data()
     model = prepare_model()
-    #
-    # model.fit(x=X_train, y=Y_train, epochs=1, shuffle=True, validation_data=(X_test, Y_test))
+
+    # model.fit(x=X_train, y=Y_train, epochs=500, shuffle=True, validation_data=(X_test, Y_test))
     # save_model(model, "Models/model_0")
 
     # ========================================= #
@@ -169,12 +184,9 @@ def main():
     # cv2.imshow('test', y_pred)
     # cv2.waitKey()
 
+
 if __name__ == '__main__':
     main()
-
-
-
-
 
 """
     left_eye_center_x
